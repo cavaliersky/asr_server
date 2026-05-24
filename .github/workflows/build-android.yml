@@ -1,0 +1,66 @@
+name: Build Android ARM artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_NDK_VERSION: r21e
+      ANDROID_NDK_HOME: ${{ runner.temp }}/android-ndk
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git python3 python3-pip unzip wget pkg-config openjdk-11-jdk protobuf-compiler
+
+      - name: Download Android NDK
+        run: |
+          wget https://dl.google.com/android/repository/android-ndk-${{ env.ANDROID_NDK_VERSION }}-linux-x86_64.zip -O ndk.zip
+          unzip ndk.zip -d $RUNNER_TEMP
+          mv $RUNNER_TEMP/android-ndk-${{ env.ANDROID_NDK_VERSION }} ${{ env.ANDROID_NDK_HOME }}
+
+      - name: Build ONNX Runtime for Android (armeabi-v7a)
+        run: |
+          git clone --depth 1 https://github.com/microsoft/onnxruntime.git third_party/onnxruntime
+          mkdir -p third_party/onnxruntime/build-android && cd third_party/onnxruntime/build-android
+          cmake -DCMAKE_TOOLCHAIN_FILE=${{ env.ANDROID_NDK_HOME }}/build/cmake/android.toolchain.cmake \
+                -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-21 -DONNX_CUSTOM_PROTOC_EXECUTABLE=/usr/bin/protoc -DCMAKE_BUILD_TYPE=Release ..
+          make -j$(nproc)
+          cp -v ./libonnxruntime.so $GITHUB_WORKSPACE/lib/ || true
+
+      - name: Build sherpa-onnx-c-api for Android
+        run: |
+          git clone --depth 1 https://github.com/k2-fsa/sherpa-onnx.git third_party/sherpa-onnx
+          mkdir -p third_party/sherpa-onnx/build && cd third_party/sherpa-onnx/build
+          cmake -DCMAKE_TOOLCHAIN_FILE=${{ env.ANDROID_NDK_HOME }}/build/cmake/android.toolchain.cmake \
+                -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-21 \
+                -Donnxruntime_DIR=$GITHUB_WORKSPACE/third_party/onnxruntime/build -DCMAKE_BUILD_TYPE=Release ..
+          make -j$(nproc)
+          cp -v ./lib/libsherpa-onnx-c-api.so $GITHUB_WORKSPACE/lib/ || true
+
+      - name: Build Go binary for Android
+        env:
+          CGO_ENABLED: 1
+          GOOS: android
+          GOARCH: arm
+          GOARM: 7
+          CC: clang
+        run: |
+          mkdir -p ./lib
+          export CGO_LDFLAGS="-L$GITHUB_WORKSPACE/lib -Wl,-rpath=\$ORIGIN/lib -lonnxruntime -lsherpa-onnx-c-api"
+          go build -v -o asr_server main.go
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-arm-artifacts
+          path: |
+            asr_server
+            lib/*.so

@@ -25,15 +25,32 @@ jobs:
           unzip ndk.zip -d $RUNNER_TEMP
           mv $RUNNER_TEMP/android-ndk-${{ env.ANDROID_NDK_VERSION }} $RUNNER_TEMP/android-ndk
 
-      - name: Build ONNX Runtime for Android (armeabi-v7a)
+      - name: Download prebuilt ONNX Runtime Android (armeabi-v7a)
         run: |
-          export ANDROID_NDK_HOME=$RUNNER_TEMP/android-ndk
-          git clone --depth 1 https://github.com/microsoft/onnxruntime.git third_party/onnxruntime
-          mkdir -p third_party/onnxruntime/build-android && cd third_party/onnxruntime/build-android
-          cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-                -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-21 -DONNX_CUSTOM_PROTOC_EXECUTABLE=/usr/bin/protoc -DCMAKE_BUILD_TYPE=Release ..
-          make -j$(nproc)
-          cp -v ./libonnxruntime.so $GITHUB_WORKSPACE/lib/ || true
+          mkdir -p $GITHUB_WORKSPACE/lib
+          echo "Searching latest ONNX Runtime release for Android assets..."
+          url=$(python3 - <<'PY'
+import json,urllib.request
+try:
+    data=json.load(urllib.request.urlopen('https://api.github.com/repos/microsoft/onnxruntime/releases/latest'))
+    assets=data.get('assets',[])
+    for a in assets:
+        n=a.get('name','').lower()
+        if 'android' in n or 'armv7' in n or 'armeabi' in n:
+            print(a.get('browser_download_url'))
+            break
+except Exception as e:
+    pass
+PY
+)
+          if [ -z "$url" ]; then echo 'No android asset found in ONNX Runtime releases — continuing without prebuilt onnxruntime'; else
+            echo "Downloading $url"
+            wget -q "$url" -O $RUNNER_TEMP/onnxruntime_android.tgz || wget -q "$url" -O $RUNNER_TEMP/onnxruntime_android.zip || true
+            # try tar then zip
+            if [ -f "$RUNNER_TEMP/onnxruntime_android.tgz" ]; then tar -xzf $RUNNER_TEMP/onnxruntime_android.tgz -C $RUNNER_TEMP || true; fi
+            if [ -f "$RUNNER_TEMP/onnxruntime_android.zip" ]; then unzip -q $RUNNER_TEMP/onnxruntime_android.zip -d $RUNNER_TEMP || true; fi
+            find $RUNNER_TEMP -type f -name '*.so' -exec cp -v {} $GITHUB_WORKSPACE/lib/ \; || true
+          fi
 
       - name: Build sherpa-onnx-c-api for Android
         run: |

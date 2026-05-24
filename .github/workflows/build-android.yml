@@ -9,7 +9,8 @@ jobs:
   build-android:
     runs-on: ubuntu-latest
     env:
-      ANDROID_NDK_VERSION: r21e
+      # 【关键修复】升级到 r22b 避开 NDK r21e ld.gold 链接器的底层 Bug
+      ANDROID_NDK_VERSION: r22b
 
     steps:
       - uses: actions/checkout@v4

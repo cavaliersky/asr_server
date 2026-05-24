@@ -1,208 +1,88 @@
-name: Build Android ARMv7
+name: Build Android ARM artifacts
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
-
+  build-android:
+    runs-on: ubuntu-latest
     env:
       ANDROID_NDK_VERSION: r22b
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install packages
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-
-          sudo apt-get install -y \
-            git \
-            wget \
-            unzip \
-            cmake \
-            ninja-build \
-            build-essential \
-            python3 \
-            pkg-config \
-            openjdk-11-jdk \
-            protobuf-compiler
-
-      ####################################################################
-      # 下载 Android NDK
-      ####################################################################
+          sudo apt-get install -y build-essential cmake git python3 python3-pip unzip wget pkg-config openjdk-11-jdk protobuf-compiler
 
       - name: Download Android NDK
         run: |
           wget https://dl.google.com/android/repository/android-ndk-${{ env.ANDROID_NDK_VERSION }}-linux-x86_64.zip -O ndk.zip
-
           unzip -q ndk.zip -d $RUNNER_TEMP
+          mv $RUNNER_TEMP/android-ndk-${{ env.ANDROID_NDK_VERSION }} $RUNNER_TEMP/android-ndk
 
-          mv \
-            $RUNNER_TEMP/android-ndk-${{ env.ANDROID_NDK_VERSION }} \
-            $RUNNER_TEMP/android-ndk
-
-      ####################################################################
-      # 编译 sherpa-onnx Android ARMv7
-      ####################################################################
-
-      - name: Build sherpa-onnx
+      - name: Build sherpa-onnx for Android
         run: |
-          git clone --depth 1 \
-            https://github.com/k2-fsa/sherpa-onnx.git \
-            sherpa-onnx
-
-          cd sherpa-onnx
-
+          git clone --depth 1 https://github.com/k2-fsa/sherpa-onnx.git third_party/sherpa-onnx
+          cd third_party/sherpa-onnx
+          
           export ANDROID_NDK=$RUNNER_TEMP/android-ndk
-
           export SHERPA_ONNX_ENABLE_C_API=ON
           export BUILD_SHARED_LIBS=ON
-
+          
           ./build-android-armv7-eabi.sh
-
+          
           mkdir -p $GITHUB_WORKSPACE/lib
+          cp -v build-android-armv7-eabi/install/lib/*.so $GITHUB_WORKSPACE/lib/
 
-          cp -av \
-            build-android-armv7-eabi/install/lib/*.so \
-            $GITHUB_WORKSPACE/lib/
-
-          ################################################################
-          # 修复 libonnxruntime.so 缺失
-          ################################################################
-
-          cd $GITHUB_WORKSPACE/lib
-
-          if [ ! -f libonnxruntime.so ]; then
-            REAL_FILE=$(ls libonnxruntime.so.* | head -n 1)
-            ln -s "$REAL_FILE" libonnxruntime.so
-          fi
-
-      ####################################################################
-      # 修补 sherpa-onnx-go
-      ####################################################################
-
-      - name: Patch sherpa-onnx-go
+      - name: Patch sherpa-onnx-go for Android
         run: |
-
-          ################################################################
-          # 底层 Linux binding
-          ################################################################
-
-          git clone --depth 1 \
-            https://github.com/k2-fsa/sherpa-onnx-go-linux.git \
-            $RUNNER_TEMP/sherpa-go-linux
-
+          # 1. 克隆底层实现库（去除自带的 Linux 二进制库，并写入我们自己的 Android 构建约束）
+          git clone --depth 1 https://github.com/k2-fsa/sherpa-onnx-go-linux.git $RUNNER_TEMP/sherpa-go-linux
           cd $RUNNER_TEMP/sherpa-go-linux
-
-          rm -rf lib build_*.go
-
-          ################################################################
-          # Android build tag
-          ################################################################
-
-          cat > build_android.go <<EOF
+          rm -rf lib build_*.go  
+          cat <<EOF > build_android.go
           //go:build android
           package sherpa_onnx
           import "C"
           EOF
-
-          ################################################################
-          # 修复 ARM32 giant array
-          ################################################################
-
-          sed -i 's/\(\*\)\(\[1 << 30\]float32\)(unsafe.Pointer(\([^)]*\)))\[:\([^]]*\):\([^]]*\)\]/unsafe.Slice((*float32)(unsafe.Pointer(\3)), \4)/g' sherpa_onnx.go
-
-          sed -i 's/\(\*\)\(\[1 << 30\]_Ctype_float\)(unsafe.Pointer(\([^)]*\)))\[:\([^]]*\):\([^]]*\)\]/unsafe.Slice((*_Ctype_float)(unsafe.Pointer(\3)), \4)/g' sherpa_onnx.go
-
-          ################################################################
-          # 顶层 Go binding
-          ################################################################
-
-          git clone --depth 1 \
-            https://github.com/k2-fsa/sherpa-onnx-go.git \
-            $RUNNER_TEMP/sherpa-go
-
+          
+          # 2. 克隆顶层路由库（复制一份供 Android 环境使用的映射文件并修正 Tag）
+          git clone --depth 1 https://github.com/k2-fsa/sherpa-onnx-go.git $RUNNER_TEMP/sherpa-go
           cd $RUNNER_TEMP/sherpa-go/sherpa_onnx
-
           cp sherpa_onnx_linux.go sherpa_onnx_android.go
-
           sed -i 's/go:build .*/go:build android/g' sherpa_onnx_android.go
-
           sed -i 's/+build .*/+build android/g' sherpa_onnx_android.go
-
-          ################################################################
-          # replace
-          ################################################################
-
+          
+          # 3. 在用户项目内使用 replace 强制覆盖官方库为我们魔改后的本地版本
           cd $GITHUB_WORKSPACE
-
-          go mod edit -replace \
-            github.com/k2-fsa/sherpa-onnx-go-linux=$RUNNER_TEMP/sherpa-go-linux
-
-          go mod edit -replace \
-            github.com/k2-fsa/sherpa-onnx-go=$RUNNER_TEMP/sherpa-go
-
+          go mod edit -replace github.com/k2-fsa/sherpa-onnx-go-linux=$RUNNER_TEMP/sherpa-go-linux
+          go mod edit -replace github.com/k2-fsa/sherpa-onnx-go=$RUNNER_TEMP/sherpa-go
           go mod tidy
 
-      ####################################################################
-      # 编译 Go Android ARMv7
-      ####################################################################
-
-      - name: Build Go binary
+      - name: Build Go binary for Android
         env:
-          CGO_ENABLED: "1"
+          CGO_ENABLED: '1'
           GOOS: android
           GOARCH: arm
-          GOARM: "7"
-
+          GOARM: '7'
         run: |
-
           export ANDROID_NDK_HOME=$RUNNER_TEMP/android-ndk
+          
+          # 指定交叉编译工具链并注入之前编译好的 Android C++ 库路径
+          export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang"
+          export CGO_LDFLAGS="-L$GITHUB_WORKSPACE/lib -Wl,-rpath=\$ORIGIN/lib -lonnxruntime -lsherpa-onnx-c-api"
+          
+          go build -v -o asr_server main.go
 
-          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-
-          export CC=$TOOLCHAIN/bin/armv7a-linux-androideabi21-clang
-
-          export CXX=$TOOLCHAIN/bin/armv7a-linux-androideabi21-clang++
-
-          ################################################################
-          # Android so
-          ################################################################
-
-          export CGO_CFLAGS="-I$GITHUB_WORKSPACE/lib"
-
-          export CGO_LDFLAGS="\
-            -L$GITHUB_WORKSPACE/lib \
-            -lonnxruntime \
-            -lsherpa-onnx-c-api"
-
-          ################################################################
-          # 编译
-          ################################################################
-
-          go build \
-            -v \
-            -trimpath \
-            -ldflags="-s -w" \
-            -o asr_server \
-            main.go
-
-      ####################################################################
-      # 上传
-      ####################################################################
-
-      - name: Upload
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
-
         with:
-          name: android-armv7
-
+          name: android-arm-artifacts
           path: |
             asr_server
             lib/*.so

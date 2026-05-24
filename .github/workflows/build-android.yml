@@ -22,46 +22,25 @@ jobs:
       - name: Download Android NDK
         run: |
           wget https://dl.google.com/android/repository/android-ndk-${{ env.ANDROID_NDK_VERSION }}-linux-x86_64.zip -O ndk.zip
-          unzip ndk.zip -d $RUNNER_TEMP
+          unzip -q ndk.zip -d $RUNNER_TEMP
           mv $RUNNER_TEMP/android-ndk-${{ env.ANDROID_NDK_VERSION }} $RUNNER_TEMP/android-ndk
 
-      - name: Download prebuilt ONNX Runtime Android (armeabi-v7a)
+      - name: Build sherpa-onnx for Android
         run: |
-          mkdir -p $GITHUB_WORKSPACE/lib
-          echo "Searching latest ONNX Runtime release for Android assets..."
-          url=$(python3 - <<'PY'
-          import json,urllib.request
-          try:
-              data=json.load(urllib.request.urlopen('https://api.github.com/repos/microsoft/onnxruntime/releases/latest'))
-              assets=data.get('assets',[])
-              for a in assets:
-                  n=a.get('name','').lower()
-                  if 'android' in n or 'armv7' in n or 'armeabi' in n:
-                      print(a.get('browser_download_url'))
-                      break
-          except Exception as e:
-              pass
-          PY
-          )
-          if [ -z "$url" ]; then echo 'No android asset found in ONNX Runtime releases — continuing without prebuilt onnxruntime'; else
-            echo "Downloading $url"
-            wget -q "$url" -O $RUNNER_TEMP/onnxruntime_android.tgz || wget -q "$url" -O $RUNNER_TEMP/onnxruntime_android.zip || true
-            # try tar then zip
-            if [ -f "$RUNNER_TEMP/onnxruntime_android.tgz" ]; then tar -xzf $RUNNER_TEMP/onnxruntime_android.tgz -C $RUNNER_TEMP || true; fi
-            if [ -f "$RUNNER_TEMP/onnxruntime_android.zip" ]; then unzip -q $RUNNER_TEMP/onnxruntime_android.zip -d $RUNNER_TEMP || true; fi
-            find $RUNNER_TEMP -type f -name '*.so' -exec cp -v {} $GITHUB_WORKSPACE/lib/ \; || true
-          fi
-
-      - name: Build sherpa-onnx-c-api for Android
-        run: |
-          export ANDROID_NDK_HOME=$RUNNER_TEMP/android-ndk
           git clone --depth 1 https://github.com/k2-fsa/sherpa-onnx.git third_party/sherpa-onnx
-          mkdir -p third_party/sherpa-onnx/build && cd third_party/sherpa-onnx/build
-          cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-                -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-21 \
-                -Donnxruntime_DIR=$GITHUB_WORKSPACE/third_party/onnxruntime/build -DCMAKE_BUILD_TYPE=Release ..
-          make -j$(nproc)
-          cp -v ./lib/libsherpa-onnx-c-api.so $GITHUB_WORKSPACE/lib/ || true
+          cd third_party/sherpa-onnx
+          
+          # 设定 sherpa-onnx 安卓脚本所需的环境变量
+          export ANDROID_NDK=$RUNNER_TEMP/android-ndk
+          export SHERPA_ONNX_ENABLE_C_API=ON
+          export BUILD_SHARED_LIBS=ON
+          
+          # 直接执行官方提供的 Android armv7 编译脚本（会自动下载配套的包含头文件的 onnxruntime）
+          ./build-android-armv7-eabi.sh
+          
+          # 将编译好的 libonnxruntime.so 和 libsherpa-onnx-c-api.so 转移到 workspace 的 lib 目录中
+          mkdir -p $GITHUB_WORKSPACE/lib
+          cp -v build-android-armv7-eabi/install/lib/*.so $GITHUB_WORKSPACE/lib/
 
       - name: Build Go binary for Android
         env:
@@ -69,11 +48,13 @@ jobs:
           GOOS: android
           GOARCH: arm
           GOARM: '7'
-          CC: clang
         run: |
-          mkdir -p ./lib
           export ANDROID_NDK_HOME=$RUNNER_TEMP/android-ndk
+          
+          # 针对 CGO 的 Android 交叉编译，必须使用 NDK 中的对应 clang，不能用系统的 clang
+          export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang"
           export CGO_LDFLAGS="-L$GITHUB_WORKSPACE/lib -Wl,-rpath=\$ORIGIN/lib -lonnxruntime -lsherpa-onnx-c-api"
+          
           go build -v -o asr_server main.go
 
       - name: Upload artifacts

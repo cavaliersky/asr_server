@@ -30,19 +30,19 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/lib
           echo "Searching latest ONNX Runtime release for Android assets..."
           url=$(python3 - <<'PY'
-import json,urllib.request
-try:
-    data=json.load(urllib.request.urlopen('https://api.github.com/repos/microsoft/onnxruntime/releases/latest'))
-    assets=data.get('assets',[])
-    for a in assets:
-        n=a.get('name','').lower()
-        if 'android' in n or 'armv7' in n or 'armeabi' in n:
-            print(a.get('browser_download_url'))
-            break
-except Exception as e:
-    pass
-PY
-)
+          import json,urllib.request
+          try:
+              data=json.load(urllib.request.urlopen('https://api.github.com/repos/microsoft/onnxruntime/releases/latest'))
+              assets=data.get('assets',[])
+              for a in assets:
+                  n=a.get('name','').lower()
+                  if 'android' in n or 'armv7' in n or 'armeabi' in n:
+                      print(a.get('browser_download_url'))
+                      break
+          except Exception as e:
+              pass
+          PY
+          )
           if [ -z "$url" ]; then echo 'No android asset found in ONNX Runtime releases — continuing without prebuilt onnxruntime'; else
             echo "Downloading $url"
             wget -q "$url" -O $RUNNER_TEMP/onnxruntime_android.tgz || wget -q "$url" -O $RUNNER_TEMP/onnxruntime_android.zip || true
@@ -65,10 +65,10 @@ PY
 
       - name: Build Go binary for Android
         env:
-          CGO_ENABLED: 1
+          CGO_ENABLED: '1'
           GOOS: android
           GOARCH: arm
-          GOARM: 7
+          GOARM: '7'
           CC: clang
         run: |
           mkdir -p ./lib
